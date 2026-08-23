@@ -10,7 +10,7 @@
  * Limitation (documented, not hidden): this is a conservative interim suite.
  * It does not implement a Double Ratchet. See docs/CRYPTOGRAPHY.md.
  */
-import { base64ToBytes, bytesToBase64, concatBytes, utf8ToBytes } from "@/lib/encoding";
+import { base64ToBytes, bytesToBase64, concatBytes, toBuffer, utf8ToBytes } from "@/lib/encoding";
 import type { AeadCiphertext, CryptoProvider, CryptoSuiteId, KeyPairHandle } from "./types";
 
 const SUITE: CryptoSuiteId = "webcrypto-p256-hkdf-aesgcm-v1";
@@ -51,7 +51,7 @@ export class WebCryptoProvider implements CryptoProvider {
   }
 
   async sign(privateKey: CryptoKey, data: Uint8Array): Promise<string> {
-    const sig = await subtle().sign({ name: "ECDSA", hash: "SHA-256" }, privateKey, data);
+    const sig = await subtle().sign({ name: "ECDSA", hash: "SHA-256" }, privateKey, toBuffer(data));
     return bytesToBase64(new Uint8Array(sig));
   }
 
@@ -62,7 +62,7 @@ export class WebCryptoProvider implements CryptoProvider {
   ): Promise<boolean> {
     const key = await subtle().importKey(
       "raw",
-      base64ToBytes(publicKeyBase64),
+      toBuffer(base64ToBytes(publicKeyBase64)),
       { name: "ECDSA", namedCurve: CURVE },
       false,
       ["verify"],
@@ -70,15 +70,15 @@ export class WebCryptoProvider implements CryptoProvider {
     return subtle().verify(
       { name: "ECDSA", hash: "SHA-256" },
       key,
-      base64ToBytes(signatureBase64),
-      data,
+      toBuffer(base64ToBytes(signatureBase64)),
+      toBuffer(data),
     );
   }
 
   async agree(privateKey: CryptoKey, peerPublicKeyBase64: string): Promise<Uint8Array> {
     const peer = await subtle().importKey(
       "raw",
-      base64ToBytes(peerPublicKeyBase64),
+      toBuffer(base64ToBytes(peerPublicKeyBase64)),
       { name: "ECDH", namedCurve: CURVE },
       false,
       [],
@@ -88,11 +88,11 @@ export class WebCryptoProvider implements CryptoProvider {
   }
 
   async deriveAeadKey(secrets: Uint8Array[], salt: Uint8Array, info: string): Promise<CryptoKey> {
-    const material = await subtle().importKey("raw", concatBytes(...secrets), "HKDF", false, [
+    const material = await subtle().importKey("raw", toBuffer(concatBytes(...secrets)), "HKDF", false, [
       "deriveKey",
     ]);
     return subtle().deriveKey(
-      { name: "HKDF", hash: "SHA-256", salt, info: utf8ToBytes(info) },
+      { name: "HKDF", hash: "SHA-256", salt: toBuffer(salt), info: toBuffer(utf8ToBytes(info)) },
       material,
       { name: "AES-GCM", length: 256 },
       false,
@@ -107,9 +107,9 @@ export class WebCryptoProvider implements CryptoProvider {
   ): Promise<AeadCiphertext> {
     const nonce = this.randomBytes(12);
     const out = await subtle().encrypt(
-      { name: "AES-GCM", iv: nonce, additionalData: aad, tagLength: 128 },
+      { name: "AES-GCM", iv: toBuffer(nonce), additionalData: toBuffer(aad), tagLength: 128 },
       key,
-      plaintext,
+      toBuffer(plaintext),
     );
     return { ciphertext: bytesToBase64(new Uint8Array(out)), nonce: bytesToBase64(nonce) };
   }
@@ -122,12 +122,12 @@ export class WebCryptoProvider implements CryptoProvider {
     const out = await subtle().decrypt(
       {
         name: "AES-GCM",
-        iv: base64ToBytes(payload.nonce),
-        additionalData: aad,
+        iv: toBuffer(base64ToBytes(payload.nonce)),
+        additionalData: toBuffer(aad),
         tagLength: 128,
       },
       key,
-      base64ToBytes(payload.ciphertext),
+      toBuffer(base64ToBytes(payload.ciphertext)),
     );
     return new Uint8Array(out);
   }
@@ -139,7 +139,7 @@ export class WebCryptoProvider implements CryptoProvider {
   }
 
   async digest(data: Uint8Array): Promise<Uint8Array> {
-    return new Uint8Array(await subtle().digest("SHA-256", data));
+    return new Uint8Array(await subtle().digest("SHA-256", toBuffer(data)));
   }
 }
 

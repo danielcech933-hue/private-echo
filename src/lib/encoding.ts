@@ -44,3 +44,12 @@ export function concatBytes(...parts: Uint8Array[]): Uint8Array {
   }
   return out;
 }
+
+/**
+ * WebCrypto's TS types require a plain ArrayBuffer-backed view; copy into one.
+ */
+export function toBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.length);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
+}
