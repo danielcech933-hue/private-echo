@@ -2,9 +2,8 @@
  * Device-local key storage (IndexedDB).
  *
  * Private keys are stored as non-extractable `CryptoKey` objects. IndexedDB can
- * structured-clone a CryptoKey without ever exposing its bytes to JavaScript,
- * so no serialisation of private key material exists anywhere in this app.
- * Nothing from this module is ever uploaded.
+ * structured-clone a CryptoKey without exposing key bytes to application code.
+ * Nothing from this module is uploaded.
  */
 import type { KeyPairHandle, KeyStore } from "./types";
 
@@ -42,6 +41,7 @@ async function tx<T>(
       const request = run(transaction.objectStore(store));
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error ?? new Error("Key store operation failed"));
+      transaction.onerror = () => reject(transaction.error ?? new Error("Key store transaction failed"));
     });
   } finally {
     db.close();
@@ -80,6 +80,65 @@ export class IndexedDbKeyStore implements KeyStore {
   async getValue(id: string): Promise<string | null> {
     const value = await tx<string | undefined>(VALUES_STORE, "readonly", (s) => s.get(id));
     return value ?? null;
+  }
+
+  /**
+   * Atomically updates a value inside one IndexedDB read/write transaction.
+   * This is required for monotonic counters and replay state so concurrent
+   * tabs cannot observe and write the same previous value.
+   */
+  async updateValueAtomic<T>(
+    id: string,
+    updater: (current: string | null) => { value: string; result: T },
+  ): Promise<T> {
+    const db = await openDb();
+    return new Promise<T>((resolve, reject) => {
+      const transaction = db.transaction(VALUES_STORE, "readwrite");
+      const store = transaction.objectStore(VALUES_STORE);
+      let result: T | undefined;
+      let callbackError: unknown;
+
+      const request = store.get(id);
+      request.onsuccess = () => {
+        try {
+          const current = typeof request.result === "string" ? request.result : null;
+          const next = updater(current);
+          result = next.result;
+          store.put(next.value, id);
+        } catch (error) {
+          callbackError = error;
+          transaction.abort();
+        }
+      };
+
+      request.onerror = () => {
+        callbackError = request.error ?? new Error("Atomic key-store read failed");
+        transaction.abort();
+      };
+
+      transaction.oncomplete = () => {
+        db.close();
+        if (callbackError) {
+          reject(callbackError);
+        } else if (result !== undefined) {
+          resolve(result);
+        } else {
+          reject(new Error("Atomic key-store update produced no result"));
+        }
+      };
+
+      transaction.onerror = () => {
+        const error = callbackError ?? transaction.error ?? new Error("Atomic key-store transaction failed");
+        db.close();
+        reject(error);
+      };
+
+      transaction.onabort = () => {
+        const error = callbackError ?? transaction.error ?? new Error("Atomic key-store transaction aborted");
+        db.close();
+        reject(error);
+      };
+    });
   }
 
   async wipe(): Promise<void> {
