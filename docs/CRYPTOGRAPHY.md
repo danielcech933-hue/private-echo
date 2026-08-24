@@ -64,5 +64,3 @@ The current construction is also **not MLS**. Group conversations currently fan 
 ## Replacement strategy
 
 The interfaces in `src/crypto/types.ts` deliberately separate cryptographic primitives from React, Supabase and the UI. The intended production path is to replace the interim session/message implementation with a thoroughly reviewed and independently audited protocol/library while preserving those higher-level boundaries.
-
-Any future protocol implementation must define its own threat model, key lifecycle, identity-change semantics, device addition/removal semantics, offline message handling and downgrade protection before it is enabled as a production suite.
