@@ -8,7 +8,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable";
 import { ensureProfile } from "@/services/contact-service";
 
 export const Route = createFileRoute("/auth")({
@@ -45,17 +44,19 @@ function AuthPage() {
             try {
               await ensureProfile(pending);
             } catch {
-              /* handle already taken — user can set it later */
+              /* Handle can be corrected later if profile creation failed. */
             }
             window.sessionStorage.removeItem("ciphra-pending-handle");
           }
-          void navigate({ to: "/messages", replace: true });
+          await navigate({ to: "/messages", replace: true });
         })();
       }
     });
+
     void supabase.auth.getUser().then(({ data: user }) => {
       if (user.user) void navigate({ to: "/messages", replace: true });
     });
+
     return () => data.subscription.unsubscribe();
   }, [navigate]);
 
@@ -71,6 +72,7 @@ function AuthPage() {
       toast.error("Pick a handle with at least 3 characters");
       return;
     }
+
     setBusy(true);
     window.sessionStorage.setItem("ciphra-pending-handle", handle.trim().toLowerCase());
     const { data, error } = await supabase.auth.signUp({
@@ -79,19 +81,12 @@ function AuthPage() {
       options: { emailRedirectTo: window.location.origin },
     });
     setBusy(false);
+
     if (error) {
       toast.error(error.message);
       return;
     }
     if (!data.session) setAwaitingConfirm(true);
-  }
-
-  async function signInWithGoogle() {
-    try {
-      await lovable.auth.signInWithOAuth("google", { redirect_uri: window.location.origin });
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Google sign-in failed");
-    }
   }
 
   return (
@@ -141,18 +136,6 @@ function AuthPage() {
                 Create account
               </Button>
             </TabsContent>
-
-            <div className="mt-6 space-y-3">
-              <div className="text-center text-xs text-muted-foreground">or</div>
-              <Button
-                variant="outline"
-                className="w-full"
-                onClick={() => void signInWithGoogle()}
-                disabled={busy}
-              >
-                Continue with Google
-              </Button>
-            </div>
           </Tabs>
         )}
       </div>
