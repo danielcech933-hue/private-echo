@@ -2,9 +2,8 @@
  * Cryptographic abstraction layer — interfaces only.
  *
  * Nothing in this file knows about React, Supabase or the UI.
- * The concrete provider is intentionally replaceable: the goal is to swap the
- * current WebCrypto implementation for an audited library / protocol
- * implementation without touching UI or data access code.
+ * The concrete provider is intentionally replaceable so an audited protocol
+ * implementation can later replace the interim WebCrypto suite.
  */
 
 export type CryptoSuiteId = "webcrypto-p256-hkdf-aesgcm-v1";
@@ -14,7 +13,6 @@ export interface PublicKeyMaterial {
 }
 
 export interface KeyPairHandle {
-  /** Never serialised, never sent to the server. */
   privateKey: CryptoKey;
   publicKey: CryptoKey;
   publicKeyBase64: string;
@@ -45,12 +43,10 @@ export interface KeyStore {
   deleteKeyPair(id: string): Promise<void>;
   putValue(id: string, value: string): Promise<void>;
   getValue(id: string): Promise<string | null>;
-  /** Atomically transforms one value in a single IndexedDB transaction. */
   updateValueAtomic<T>(
     id: string,
     updater: (current: string | null) => { value: string; result: T },
   ): Promise<T>;
-  /** Local panic wipe: removes all device key material and local state. */
   wipe(): Promise<void>;
 }
 
@@ -91,6 +87,7 @@ export interface KeyManager {
   }>;
   generateOneTimePrekeys(count: number): Promise<Array<{ prekeyId: number; publicKey: string }>>;
   getPrekeyPair(prekeyId: number): Promise<KeyPairHandle | null>;
+  consumePrekey(prekeyId: number): Promise<void>;
   getSignedPrekeyPair(): Promise<KeyPairHandle | null>;
   getSigningKeyPair(): Promise<KeyPairHandle | null>;
 }
