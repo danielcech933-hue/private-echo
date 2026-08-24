@@ -18,6 +18,8 @@ Each device creates a signing identity key pair and an agreement-key hierarchy c
 
 The signed pre-key is authenticated by the device identity key. A sender must verify that signature before using the signed pre-key for key agreement.
 
+On receipt, the client also binds the envelope identity public key to the registered public identity key of the declared sender device before decrypting.
+
 ## Current message construction
 
 For each outbound message, the sender creates a fresh ephemeral ECDH key pair. The sender derives shared secret material with the recipient signed pre-key and, when available, a one-time pre-key.
@@ -33,11 +35,17 @@ ciphertext = AES-256-GCM(key, plaintext, authenticated_header)
 
 The one-time pre-key is optional because a recipient may temporarily exhaust its published one-time pre-key pool.
 
-The encrypted envelope authenticates routing and anti-replay fields using AES-GCM additional authenticated data and a signed header construction.
+The encrypted envelope authenticates routing and anti-replay fields using AES-GCM additional authenticated data and an ECDSA signature over the envelope header.
+
+## One-time pre-key lifecycle
+
+A sender claims one published one-time pre-key through an authenticated server function that requires active membership in the conversation. The claim is atomic, preventing two concurrent senders from receiving the same public pre-key.
+
+The recipient keeps the corresponding private pre-key locally until a message using it successfully authenticates and decrypts. The private key is then deleted from local IndexedDB storage.
 
 ## Anti-replay
 
-An envelope contains a random message ID and a monotonic sender counter. The client validates freshness and keeps local replay state before accepting the plaintext.
+An envelope contains a random message ID and a monotonic sender counter. The client validates timestamp and counter freshness first, authenticates and decrypts the envelope, and only then records accepted replay state atomically. This avoids burning replay state on invalid ciphertext while preventing concurrent duplicate acceptance.
 
 ## Safety numbers
 
@@ -55,6 +63,6 @@ The current construction is also **not MLS**. Group conversations currently fan 
 
 ## Replacement strategy
 
-The interfaces in `src/crypto/types.ts` deliberately separate cryptographic primitives from React and Supabase. The intended production path is to replace the interim session/message implementation with a thoroughly reviewed and independently audited protocol/library while preserving those higher-level boundaries.
+The interfaces in `src/crypto/types.ts` deliberately separate cryptographic primitives from React, Supabase and the UI. The intended production path is to replace the interim session/message implementation with a thoroughly reviewed and independently audited protocol/library while preserving those higher-level boundaries.
 
 Any future protocol implementation must define its own threat model, key lifecycle, identity-change semantics, device addition/removal semantics, offline message handling and downgrade protection before it is enabled as a production suite.
