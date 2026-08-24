@@ -15,6 +15,22 @@ export interface LocalDevice {
   fingerprint: string;
 }
 
+type ClaimPrekeyResponse = {
+  data: Array<{ prekey_id: number; public_key: string }> | null;
+  error: Error | null;
+};
+
+type ClaimPrekeyRpc = {
+  rpc: (
+    name: "claim_one_time_prekey",
+    args: {
+      _device_id: string;
+      _consumer_device_id: string;
+      _conversation_id: string;
+    },
+  ) => Promise<ClaimPrekeyResponse>;
+};
+
 function defaultDeviceName(): string {
   if (typeof navigator === "undefined") return "Web device";
   const ua = navigator.userAgent;
@@ -167,15 +183,16 @@ async function claimOneTimePrekey(
   const consumer = await keyStore.getValue(VALUE_IDS.deviceId);
   if (!consumer) throw new Error("Local device identity is missing");
 
-  const { data, error } = await supabase.rpc("claim_one_time_prekey", {
-    _device_id: deviceId,
-    _consumer_device_id: consumer,
-    _conversation_id: conversationId,
-  });
+  const { data, error } = await (supabase as unknown as ClaimPrekeyRpc).rpc(
+    "claim_one_time_prekey",
+    {
+      _device_id: deviceId,
+      _consumer_device_id: consumer,
+      _conversation_id: conversationId,
+    },
+  );
   if (error) throw error;
 
-  const row = Array.isArray(data) ? data[0] : data;
-  return row?.prekey_id != null && row?.public_key
-    ? { prekeyId: row.prekey_id, publicKey: row.public_key }
-    : undefined;
+  const row = data?.[0];
+  return row ? { prekeyId: row.prekey_id, publicKey: row.public_key } : undefined;
 }
