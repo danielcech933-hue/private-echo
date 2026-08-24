@@ -25,7 +25,6 @@ function defaultDeviceName(): string {
   return "Web device";
 }
 
-/** Returns the registered device for this browser, or null if setup is needed. */
 export async function getLocalDevice(): Promise<LocalDevice | null> {
   const deviceId = await keyStore.getValue(VALUE_IDS.deviceId);
   if (!deviceId) return null;
@@ -42,9 +41,6 @@ export async function getLocalDevice(): Promise<LocalDevice | null> {
   return fingerprint ? { deviceId, fingerprint } : null;
 }
 
-/**
- * Creates the device identity locally and publishes only its public bundle.
- */
 export async function registerLocalDevice(deviceName?: string): Promise<LocalDevice> {
   const existing = await getLocalDevice();
   if (existing) return existing;
@@ -72,8 +68,14 @@ export async function registerLocalDevice(deviceName?: string): Promise<LocalDev
     .single();
   if (error) throw error;
 
-  await keyStore.putValue(VALUE_IDS.deviceId, device.id);
-  await publishPrekeys(device.id, bundle.oneTimePrekeys);
+  try {
+    await keyStore.putValue(VALUE_IDS.deviceId, device.id);
+    await publishPrekeys(device.id, bundle.oneTimePrekeys);
+  } catch (error) {
+    await supabase.from("devices").delete().eq("id", device.id);
+    await identityManager.wipeLocalIdentity();
+    throw error;
+  }
 
   const fingerprint = (await identityManager.getIdentityFingerprint()) ?? "";
   return { deviceId: device.id, fingerprint };
@@ -94,7 +96,6 @@ export async function publishPrekeys(
   if (error) throw error;
 }
 
-/** Tops up the published one-time pre-keys when the pool runs low. */
 export async function replenishPrekeys(deviceId: string, minimum = 10, batch = 32): Promise<void> {
   const { count } = await supabase
     .from("device_prekeys")
@@ -105,7 +106,6 @@ export async function replenishPrekeys(deviceId: string, minimum = 10, batch = 3
   await publishPrekeys(deviceId, await keyManager.generateOneTimePrekeys(batch));
 }
 
-/** Marks this device revoked. Key material is wiped locally as well. */
 export async function revokeLocalDevice(): Promise<void> {
   const deviceId = await keyStore.getValue(VALUE_IDS.deviceId);
   if (deviceId) {
@@ -117,11 +117,6 @@ export async function revokeLocalDevice(): Promise<void> {
   await identityManager.wipeLocalIdentity();
 }
 
-/**
- * Fetches recipient device bundles and claims one one-time pre-key per device.
- * A missing one-time pre-key degrades to signed-pre-key-only agreement rather
- * than failing the send.
- */
 export async function fetchDeviceBundles(userIds: string[]): Promise<RemoteDeviceBundle[]> {
   if (userIds.length === 0) return [];
   const { data, error } = await supabase
@@ -150,21 +145,17 @@ export async function fetchDeviceBundles(userIds: string[]): Promise<RemoteDevic
 async function claimOneTimePrekey(
   deviceId: string,
 ): Promise<{ prekeyId: number; publicKey: string } | undefined> {
-  const { data } = await supabase
-    .from("device_prekeys")
-    .select("id, prekey_id, public_key")
-    .eq("device_id", deviceId)
-    .is("consumed_at", null)
-    .limit(1)
-    .maybeSingle();
-  if (!data) return undefined;
-
   const consumer = await keyStore.getValue(VALUE_IDS.deviceId);
-  await supabase
-    .from("device_prekeys")
-    .update({ consumed_at: new Date().toISOString(), consumed_by_device: consumer })
-    .eq("id", data.id)
-    .is("consumed_at", null);
+  if (!consumer) throw new Error("Local device identity is missing");
 
-  return { prekeyId: data.prekey_id, publicKey: data.public_key };
+  const { data, error } = await supabase.rpc("claim_one_time_prekey", {
+    _device_id: deviceId,
+    _consumer_device_id: consumer,
+  });
+  if (error) throw error;
+
+  const row = Array.isArray(data) ? data[0] : data;
+  return row?.prekey_id != null && row?.public_key
+    ? { prekeyId: row.prekey_id, publicKey: row.public_key }
+    : undefined;
 }
