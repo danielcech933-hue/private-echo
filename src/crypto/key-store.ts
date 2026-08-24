@@ -82,11 +82,7 @@ export class IndexedDbKeyStore implements KeyStore {
     return value ?? null;
   }
 
-  /**
-   * Atomically updates a value inside one IndexedDB read/write transaction.
-   * This is required for monotonic counters and replay state so concurrent
-   * tabs cannot observe and write the same previous value.
-   */
+  /** Atomically transforms one value in one IndexedDB transaction. */
   async updateValueAtomic<T>(
     id: string,
     updater: (current: string | null) => { value: string; result: T },
@@ -95,7 +91,8 @@ export class IndexedDbKeyStore implements KeyStore {
     return new Promise<T>((resolve, reject) => {
       const transaction = db.transaction(VALUES_STORE, "readwrite");
       const store = transaction.objectStore(VALUES_STORE);
-      let result: T | undefined;
+      let result!: T;
+      let hasResult = false;
       let callbackError: unknown;
 
       const request = store.get(id);
@@ -104,6 +101,7 @@ export class IndexedDbKeyStore implements KeyStore {
           const current = typeof request.result === "string" ? request.result : null;
           const next = updater(current);
           result = next.result;
+          hasResult = true;
           store.put(next.value, id);
         } catch (error) {
           callbackError = error;
@@ -118,13 +116,9 @@ export class IndexedDbKeyStore implements KeyStore {
 
       transaction.oncomplete = () => {
         db.close();
-        if (callbackError) {
-          reject(callbackError);
-        } else if (result !== undefined) {
-          resolve(result);
-        } else {
-          reject(new Error("Atomic key-store update produced no result"));
-        }
+        if (callbackError) reject(callbackError);
+        else if (hasResult) resolve(result);
+        else reject(new Error("Atomic key-store update produced no result"));
       };
 
       transaction.onerror = () => {
