@@ -68,9 +68,15 @@ class LocalKeyManager implements KeyManager {
   }
 
   async nextSendCounter(): Promise<number> {
-    const next = (await readCounter(this.store, VALUE_IDS.sendCounter)) + 1;
-    await this.store.putValue(VALUE_IDS.sendCounter, String(next));
-    return next;
+    return this.store.updateValueAtomic(VALUE_IDS.sendCounter, (current) => {
+      const previous = current ? Number.parseInt(current, 10) : 0;
+      if (!Number.isSafeInteger(previous) || previous < 0) {
+        throw new Error("Invalid local send counter state");
+      }
+      const next = previous + 1;
+      if (!Number.isSafeInteger(next)) throw new Error("Local send counter exhausted");
+      return { value: String(next), result: next };
+    });
   }
 }
 
