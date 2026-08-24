@@ -72,7 +72,10 @@ export async function registerLocalDevice(deviceName?: string): Promise<LocalDev
     await keyStore.putValue(VALUE_IDS.deviceId, device.id);
     await publishPrekeys(device.id, bundle.oneTimePrekeys);
   } catch (error) {
-    await supabase.from("devices").delete().eq("id", device.id);
+    await supabase
+      .from("devices")
+      .update({ status: "revoked", revoked_at: new Date().toISOString() })
+      .eq("id", device.id);
     await identityManager.wipeLocalIdentity();
     throw error;
   }
@@ -117,14 +120,29 @@ export async function revokeLocalDevice(): Promise<void> {
   await identityManager.wipeLocalIdentity();
 }
 
-export async function fetchDeviceBundles(userIds: string[]): Promise<RemoteDeviceBundle[]> {
+export async function fetchDeviceBundles(
+  userIds: string[],
+  conversationId: string,
+): Promise<RemoteDeviceBundle[]> {
   if (userIds.length === 0) return [];
+
+  const { data: membership, error: membershipError } = await supabase
+    .from("conversation_members")
+    .select("user_id")
+    .eq("conversation_id", conversationId)
+    .is("removed_at", null);
+  if (membershipError) throw membershipError;
+
+  const memberIds = new Set((membership ?? []).map((member) => member.user_id));
+  const eligibleUserIds = userIds.filter((userId) => memberIds.has(userId));
+  if (eligibleUserIds.length === 0) return [];
+
   const { data, error } = await supabase
     .from("devices")
     .select(
       "id, user_id, crypto_suite, identity_public_key, signed_prekey_id, signed_prekey_public, signed_prekey_signature",
     )
-    .in("user_id", userIds)
+    .in("user_id", eligibleUserIds)
     .eq("status", "active");
   if (error) throw error;
 
@@ -137,13 +155,14 @@ export async function fetchDeviceBundles(userIds: string[]): Promise<RemoteDevic
       signedPrekeyId: device.signed_prekey_id,
       signedPrekeyPublic: device.signed_prekey_public,
       signedPrekeySignature: device.signed_prekey_signature,
-      oneTimePrekey: await claimOneTimePrekey(device.id),
+      oneTimePrekey: await claimOneTimePrekey(device.id, conversationId),
     })),
   );
 }
 
 async function claimOneTimePrekey(
   deviceId: string,
+  conversationId: string,
 ): Promise<{ prekeyId: number; publicKey: string } | undefined> {
   const consumer = await keyStore.getValue(VALUE_IDS.deviceId);
   if (!consumer) throw new Error("Local device identity is missing");
@@ -151,6 +170,7 @@ async function claimOneTimePrekey(
   const { data, error } = await supabase.rpc("claim_one_time_prekey", {
     _device_id: deviceId,
     _consumer_device_id: consumer,
+    _conversation_id: conversationId,
   });
   if (error) throw error;
 
