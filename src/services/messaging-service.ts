@@ -7,7 +7,11 @@
 import { supabase } from "@/integrations/supabase/client";
 import { createMessageEncryptor, messageDecryptor } from "@/crypto/message-crypto";
 import type { EncryptedEnvelope, MessageHeader } from "@/crypto/types";
-import { assertFreshEnvelope, ReplayRejectedError } from "@/security/replay-guard";
+import {
+  assertFreshEnvelope,
+  recordAcceptedEnvelope,
+  ReplayRejectedError,
+} from "@/security/replay-guard";
 import { cryptoProvider } from "@/crypto/webcrypto-provider";
 import { fetchDeviceBundles, replenishPrekeys } from "./device-service";
 
@@ -203,6 +207,7 @@ export async function loadMessages(
       const envelope: EncryptedEnvelope = { header, ciphertext: row.ciphertext };
       await assertFreshEnvelope(header);
       const plaintext = await messageDecryptor.decrypt(envelope);
+      await recordAcceptedEnvelope(header);
       results.push({ ...base, body: plaintext.body, sentAt: plaintext.sentAt });
     } catch (error) {
       results.push({
