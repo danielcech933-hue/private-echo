@@ -1,9 +1,8 @@
 /**
- * Replay / reorder protection (receiving side).
+ * Replay / reorder protection for the receiving side.
  *
- * Acceptance state is device-local in IndexedDB. The counter and recent-ID
- * record are updated atomically so concurrent tabs cannot both accept the same
- * envelope or advance the sender counter from the same previous value.
+ * Freshness is checked without mutating state before decryption. The envelope
+ * is only recorded atomically after successful authentication and decryption.
  */
 import { keyStore } from "@/crypto/key-store";
 import type { MessageHeader } from "@/crypto/types";
@@ -22,42 +21,63 @@ interface ReplayState {
 
 export class ReplayRejectedError extends Error {}
 
+function parseState(current: string | null): ReplayState {
+  if (!current) return { highestCounter: 0, recentIds: [] };
+  try {
+    const parsed = JSON.parse(current) as Partial<ReplayState>;
+    return {
+      highestCounter:
+        Number.isSafeInteger(parsed.highestCounter) && parsed.highestCounter! >= 0
+          ? parsed.highestCounter!
+          : 0,
+      recentIds: Array.isArray(parsed.recentIds)
+        ? parsed.recentIds.filter((value): value is string => typeof value === "string")
+        : [],
+    };
+  } catch {
+    throw new ReplayRejectedError("Replay state is corrupt; refusing the envelope");
+  }
+}
+
+function validateHeader(
+  header: Pick<MessageHeader, "senderDeviceId" | "counter" | "messageId" | "sentAt">,
+  now: number,
+): void {
+  if (!Number.isSafeInteger(header.counter) || header.counter <= 0) {
+    throw new ReplayRejectedError("Message counter is invalid");
+  }
+  if (!header.messageId || header.messageId.length > 128) {
+    throw new ReplayRejectedError("Message id is invalid");
+  }
+  if (Math.abs(now - header.sentAt) > MAX_CLOCK_SKEW_MS) {
+    throw new ReplayRejectedError("Message timestamp is outside the accepted window");
+  }
+}
+
+/** Checks local replay state without mutating it. */
 export async function assertFreshEnvelope(
   header: Pick<MessageHeader, "senderDeviceId" | "counter" | "messageId" | "sentAt">,
   now: number = Date.now(),
 ): Promise<void> {
-  if (!Number.isSafeInteger(header.counter) || header.counter <= 0) {
-    throw new ReplayRejectedError("Message counter is invalid");
+  validateHeader(header, now);
+  const state = parseState(await keyStore.getValue(replayStateKey(header.senderDeviceId)));
+  if (state.recentIds.includes(header.messageId)) {
+    throw new ReplayRejectedError("Message id was already accepted (replay)");
   }
+  if (header.counter <= state.highestCounter) {
+    throw new ReplayRejectedError("Message counter is not newer than the last accepted one");
+  }
+}
 
-  if (!header.messageId || header.messageId.length > 128) {
-    throw new ReplayRejectedError("Message id is invalid");
-  }
-
-  if (Math.abs(now - header.sentAt) > MAX_CLOCK_SKEW_MS) {
-    throw new ReplayRejectedError("Message timestamp is outside the accepted window");
-  }
+/** Atomically records an envelope after it has been authenticated and decrypted. */
+export async function recordAcceptedEnvelope(header: Pick<MessageHeader, "senderDeviceId" | "counter" | "messageId" | "sentAt">): Promise<void> {
+  validateHeader(header, Date.now());
 
   await keyStore.updateValueAtomic(replayStateKey(header.senderDeviceId), (current) => {
-    let state: ReplayState = { highestCounter: 0, recentIds: [] };
-    if (current) {
-      try {
-        const parsed = JSON.parse(current) as Partial<ReplayState>;
-        if (Number.isSafeInteger(parsed.highestCounter) && parsed.highestCounter! >= 0) {
-          state.highestCounter = parsed.highestCounter!;
-        }
-        if (Array.isArray(parsed.recentIds)) {
-          state.recentIds = parsed.recentIds.filter((value): value is string => typeof value === "string");
-        }
-      } catch {
-        throw new ReplayRejectedError("Replay state is corrupt; refusing the envelope");
-      }
-    }
-
+    const state = parseState(current);
     if (state.recentIds.includes(header.messageId)) {
       throw new ReplayRejectedError("Message id was already accepted (replay)");
     }
-
     if (header.counter <= state.highestCounter) {
       throw new ReplayRejectedError("Message counter is not newer than the last accepted one");
     }
@@ -66,7 +86,6 @@ export async function assertFreshEnvelope(
       highestCounter: header.counter,
       recentIds: [header.messageId, ...state.recentIds].slice(0, RECENT_IDS_KEPT),
     };
-
     return { value: JSON.stringify(nextState), result: undefined };
   });
 }
