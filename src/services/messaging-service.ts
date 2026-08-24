@@ -8,6 +8,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { createMessageEncryptor, messageDecryptor } from "@/crypto/message-crypto";
 import type { EncryptedEnvelope, MessageHeader } from "@/crypto/types";
 import { assertFreshEnvelope, ReplayRejectedError } from "@/security/replay-guard";
+import { cryptoProvider } from "@/crypto/webcrypto-provider";
 import { fetchDeviceBundles, replenishPrekeys } from "./device-service";
 
 export interface ConversationSummary {
@@ -23,7 +24,6 @@ export interface DecryptedMessage {
   senderUserId: string;
   sentAt: number;
   body: string | null;
-  /** Set when the envelope could not be verified/decrypted on this device. */
   failure?: string;
 }
 
@@ -75,10 +75,6 @@ export async function getOrCreateDirectConversation(otherUserId: string): Promis
   return conversation.id;
 }
 
-/**
- * Encrypts the body once per recipient device (sender-side fan-out) and stores
- * only the resulting envelopes.
- */
 export async function sendMessage(
   conversationId: string,
   senderDeviceId: string,
@@ -87,6 +83,20 @@ export async function sendMessage(
   const { data: auth } = await supabase.auth.getUser();
   const me = auth.user?.id;
   if (!me) throw new Error("Not signed in");
+  if (!body.trim()) throw new Error("Message body cannot be empty");
+
+  const { data: senderDevice, error: senderDeviceError } = await supabase
+    .from("devices")
+    .select("id, user_id, status, crypto_suite")
+    .eq("id", senderDeviceId)
+    .maybeSingle();
+  if (senderDeviceError) throw senderDeviceError;
+  if (!senderDevice || senderDevice.user_id !== me || senderDevice.status !== "active") {
+    throw new Error("Sender device is invalid or revoked");
+  }
+  if (senderDevice.crypto_suite !== cryptoProvider.suite) {
+    throw new Error(`Unsupported sender crypto suite: ${senderDevice.crypto_suite}`);
+  }
 
   const { data: members, error: memberError } = await supabase
     .from("conversation_members")
@@ -120,31 +130,44 @@ export async function sendMessage(
   const { data: inserted, error } = await supabase.from("messages").insert(rows).select("id");
   if (error) throw error;
 
-  await supabase.from("message_delivery").insert(
+  const { error: deliveryError } = await supabase.from("message_delivery").insert(
     (inserted ?? []).map((row, index) => ({
       message_id: row.id,
       recipient_device_id: rows[index]!.recipient_device_id,
       status: "sent" as const,
     })),
   );
+  if (deliveryError) throw deliveryError;
 
   await replenishPrekeys(senderDeviceId);
 }
 
-/** Loads the envelopes addressed to this device and decrypts them locally. */
 export async function loadMessages(
   conversationId: string,
   localDeviceId: string,
 ): Promise<DecryptedMessage[]> {
   const { data, error } = await supabase
     .from("messages")
-    .select("id, conversation_id, sender_user_id, ciphertext, encrypted_metadata, created_at")
+    .select(
+      "id, conversation_id, sender_user_id, sender_device_id, recipient_device_id, ciphertext, encrypted_metadata, created_at",
+    )
     .eq("conversation_id", conversationId)
     .eq("recipient_device_id", localDeviceId)
     .order("created_at", { ascending: true });
   if (error) throw error;
 
+  const senderDeviceIds = [...new Set((data ?? []).map((row) => row.sender_device_id))];
+  const { data: senderDevices, error: senderDevicesError } = senderDeviceIds.length
+    ? await supabase
+        .from("devices")
+        .select("id, user_id, identity_public_key, status, crypto_suite")
+        .in("id", senderDeviceIds)
+    : { data: [], error: null };
+  if (senderDevicesError) throw senderDevicesError;
+
+  const deviceDirectory = new Map((senderDevices ?? []).map((device) => [device.id, device]));
   const results: DecryptedMessage[] = [];
+
   for (const row of data ?? []) {
     const base = {
       id: row.id,
@@ -152,9 +175,31 @@ export async function loadMessages(
       senderUserId: row.sender_user_id,
       sentAt: new Date(row.created_at).getTime(),
     };
+
     try {
       const header = JSON.parse(row.encrypted_metadata ?? "null") as MessageHeader | null;
       if (!header) throw new Error("Envelope header is missing");
+
+      const directoryDevice = deviceDirectory.get(row.sender_device_id);
+      if (!directoryDevice || directoryDevice.status !== "active") {
+        throw new Error("Sender device is not active");
+      }
+      if (directoryDevice.user_id !== row.sender_user_id) {
+        throw new Error("Sender device/user binding is invalid");
+      }
+      if (header.senderDeviceId !== row.sender_device_id) {
+        throw new Error("Envelope sender device does not match database routing");
+      }
+      if (header.recipientDeviceId !== localDeviceId || row.recipient_device_id !== localDeviceId) {
+        throw new Error("Envelope recipient device does not match this device");
+      }
+      if (header.senderIdentityKey !== directoryDevice.identity_public_key) {
+        throw new Error("Sender identity key does not match the registered device identity");
+      }
+      if (header.suite !== directoryDevice.crypto_suite || header.suite !== cryptoProvider.suite) {
+        throw new Error("Sender crypto suite is unsupported or mismatched");
+      }
+
       const envelope: EncryptedEnvelope = { header, ciphertext: row.ciphertext };
       await assertFreshEnvelope(header);
       const plaintext = await messageDecryptor.decrypt(envelope);
@@ -166,7 +211,9 @@ export async function loadMessages(
         failure:
           error instanceof ReplayRejectedError
             ? "Rejected by replay protection"
-            : "Cannot decrypt on this device",
+            : error instanceof Error
+              ? error.message
+              : "Cannot decrypt on this device",
       });
     }
   }
