@@ -7,11 +7,7 @@
 import { supabase } from "@/integrations/supabase/client";
 import { createMessageEncryptor, messageDecryptor } from "@/crypto/message-crypto";
 import type { EncryptedEnvelope, MessageHeader } from "@/crypto/types";
-import {
-  assertFreshEnvelope,
-  recordAcceptedEnvelope,
-  ReplayRejectedError,
-} from "@/security/replay-guard";
+import { assertFreshEnvelope, recordAcceptedEnvelope, ReplayRejectedError } from "@/security/replay-guard";
 import { cryptoProvider } from "@/crypto/webcrypto-provider";
 import { fetchDeviceBundles, replenishPrekeys } from "./device-service";
 
@@ -110,7 +106,7 @@ export async function sendMessage(
   if (memberError) throw memberError;
 
   const userIds = [...new Set((members ?? []).map((member) => member.user_id))];
-  const bundles = await fetchDeviceBundles(userIds);
+  const bundles = await fetchDeviceBundles(userIds, conversationId);
   if (bundles.length === 0) throw new Error("No active recipient device has published keys yet");
 
   const encryptor = createMessageEncryptor(senderDeviceId);
