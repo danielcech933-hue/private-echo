@@ -1,8 +1,11 @@
 -- Ciphra security hardening.
--- One-time prekeys are claimed atomically; message recipient, delivery and
--- verification writes are bound to their intended security relationships.
+-- One-time prekeys are claimed atomically and only within an active conversation.
 
-create or replace function public.claim_one_time_prekey(_device_id uuid, _consumer_device_id uuid)
+create or replace function public.claim_one_time_prekey(
+  _device_id uuid,
+  _consumer_device_id uuid,
+  _conversation_id uuid
+)
 returns table(prekey_id integer, public_key text)
 language plpgsql
 security definer
@@ -24,12 +27,24 @@ begin
     raise exception 'consumer device is not owned by the authenticated user';
   end if;
 
+  if not exists (
+    select 1 from public.conversation_members cm
+    where cm.conversation_id = _conversation_id
+      and cm.user_id = auth.uid()
+      and cm.removed_at is null
+  ) then
+    raise exception 'caller is not an active conversation member';
+  end if;
+
   select p.* into claimed
   from public.device_prekeys p
   join public.devices d on d.id = p.device_id
+  join public.conversation_members cm on cm.user_id = d.user_id
   where p.device_id = _device_id
     and p.consumed_at is null
     and d.status = 'active'
+    and cm.conversation_id = _conversation_id
+    and cm.removed_at is null
   order by p.prekey_id
   for update
   skip locked
@@ -45,9 +60,10 @@ begin
 end;
 $$;
 
-revoke all on function public.claim_one_time_prekey(uuid, uuid) from public;
-revoke execute on function public.claim_one_time_prekey(uuid, uuid) from anon;
-grant execute on function public.claim_one_time_prekey(uuid, uuid) to authenticated;
+drop function if exists public.claim_one_time_prekey(uuid, uuid);
+revoke all on function public.claim_one_time_prekey(uuid, uuid, uuid) from public;
+revoke execute on function public.claim_one_time_prekey(uuid, uuid, uuid) from anon;
+grant execute on function public.claim_one_time_prekey(uuid, uuid, uuid) to authenticated;
 revoke update on public.device_prekeys from authenticated;
 drop policy if exists prekeys_consume on public.device_prekeys;
 
@@ -99,13 +115,11 @@ using (verifier_user_id = auth.uid())
 with check (
   verifier_user_id = auth.uid()
   and exists (
-    select 1
-    from public.contacts c
+    select 1 from public.contacts c
     where c.id = contact_id
       and c.owner_id = auth.uid()
       and exists (
-        select 1
-        from public.devices d
+        select 1 from public.devices d
         where d.id = verified_device_id
           and d.user_id = c.contact_user_id
           and d.status = 'active'
