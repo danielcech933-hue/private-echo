@@ -31,7 +31,8 @@ begin
     and p.consumed_at is null
     and d.status = 'active'
   order by p.prekey_id
-  for update skip locked
+  for update
+  skip locked
   limit 1;
 
   if not found then return; end if;
@@ -45,6 +46,7 @@ end;
 $$;
 
 revoke all on function public.claim_one_time_prekey(uuid, uuid) from public;
+revoke execute on function public.claim_one_time_prekey(uuid, uuid) from anon;
 grant execute on function public.claim_one_time_prekey(uuid, uuid) to authenticated;
 revoke update on public.device_prekeys from authenticated;
 drop policy if exists prekeys_consume on public.device_prekeys;
