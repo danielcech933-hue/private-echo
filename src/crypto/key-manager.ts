@@ -12,6 +12,18 @@ async function readCounter(store: KeyStore, id: string): Promise<number> {
   return raw ? Number.parseInt(raw, 10) : 0;
 }
 
+async function nextLocalCounter(store: KeyStore, id: string, label: string): Promise<number> {
+  return store.updateValueAtomic(id, (current) => {
+    const previous = current ? Number.parseInt(current, 10) : 0;
+    if (!Number.isSafeInteger(previous) || previous < 0) {
+      throw new Error(`Invalid local ${label} counter state`);
+    }
+    const next = previous + 1;
+    if (!Number.isSafeInteger(next)) throw new Error(`Local ${label} counter exhausted`);
+    return { value: String(next), result: next };
+  });
+}
+
 class LocalKeyManager implements KeyManager {
   constructor(private readonly store: KeyStore) {}
 
@@ -20,8 +32,8 @@ class LocalKeyManager implements KeyManager {
     if (!signing) throw new Error("No device identity: run device setup first");
 
     const prekey = await cryptoProvider.generateAgreementKeyPair();
-    const signedPrekeyId = (await readCounter(this.store, VALUE_IDS.signedPrekeyId)) + 1;
-    const keyVersion = (await readCounter(this.store, VALUE_IDS.keyVersion)) + 1;
+    const signedPrekeyId = await nextLocalCounter(this.store, VALUE_IDS.signedPrekeyId, "signed pre-key");
+    const keyVersion = await nextLocalCounter(this.store, VALUE_IDS.keyVersion, "key version");
 
     const signature = await cryptoProvider.sign(
       signing.privateKey,
@@ -29,8 +41,6 @@ class LocalKeyManager implements KeyManager {
     );
 
     await this.store.putKeyPair(KEY_IDS.signedPrekey, prekey);
-    await this.store.putValue(VALUE_IDS.signedPrekeyId, String(signedPrekeyId));
-    await this.store.putValue(VALUE_IDS.keyVersion, String(keyVersion));
 
     return {
       signedPrekeyId,
@@ -41,17 +51,18 @@ class LocalKeyManager implements KeyManager {
   }
 
   async generateOneTimePrekeys(count: number) {
-    let counter = await readCounter(this.store, VALUE_IDS.prekeyCounter);
-    const published: Array<{ prekeyId: number; publicKey: string }> = [];
-
-    for (let i = 0; i < count; i += 1) {
-      counter += 1;
-      const pair = await cryptoProvider.generateAgreementKeyPair();
-      await this.store.putKeyPair(KEY_IDS.oneTimePrekey(counter), pair);
-      published.push({ prekeyId: counter, publicKey: pair.publicKeyBase64 });
+    if (!Number.isInteger(count) || count <= 0 || count > 128) {
+      throw new Error("Invalid one-time pre-key batch size");
     }
 
-    await this.store.putValue(VALUE_IDS.prekeyCounter, String(counter));
+    const published: Array<{ prekeyId: number; publicKey: string }> = [];
+    for (let i = 0; i < count; i += 1) {
+      const prekeyId = await nextLocalCounter(this.store, VALUE_IDS.prekeyCounter, "pre-key");
+      const pair = await cryptoProvider.generateAgreementKeyPair();
+      await this.store.putKeyPair(KEY_IDS.oneTimePrekey(prekeyId), pair);
+      published.push({ prekeyId, publicKey: pair.publicKeyBase64 });
+    }
+
     return published;
   }
 
@@ -72,15 +83,7 @@ class LocalKeyManager implements KeyManager {
   }
 
   async nextSendCounter(): Promise<number> {
-    return this.store.updateValueAtomic(VALUE_IDS.sendCounter, (current) => {
-      const previous = current ? Number.parseInt(current, 10) : 0;
-      if (!Number.isSafeInteger(previous) || previous < 0) {
-        throw new Error("Invalid local send counter state");
-      }
-      const next = previous + 1;
-      if (!Number.isSafeInteger(next)) throw new Error("Local send counter exhausted");
-      return { value: String(next), result: next };
-    });
+    return nextLocalCounter(this.store, VALUE_IDS.sendCounter, "send");
   }
 }
 
