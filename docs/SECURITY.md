@@ -16,15 +16,33 @@ Messages are encrypted on the originating device before insertion into `messages
 
 The backend can still observe routing information such as account/device identifiers, conversation membership, timestamps and delivery state.
 
-## Device identity
+## Device identity binding
 
 Every device has a separate cryptographic identity. Public identity material and pre-key material may be published to the backend. Private keys remain in device-local key storage.
 
-A device can be revoked, after which the client should wipe its local key material.
+On receipt, the client checks that the database sender device is active, that it belongs to the database sender account, that the envelope sender and recipient device IDs match the database route, that the envelope identity public key exactly matches the registered sender-device identity key, and that the crypto suite is supported and consistent.
+
+This prevents an attacker from simply attaching a new self-generated signing key to an existing device ID and having the receiver accept it as that device.
+
+A verified safety number should still be used for stronger protection against a malicious or compromised directory/server replacing the registered public identity key.
+
+## Device lifecycle
+
+A device can be revoked, after which it is excluded from active delivery and the local client wipes its device-local key material.
+
+One-time pre-keys are claimed atomically on the backend only inside an active conversation. Direct client-side UPDATE access to the pre-key table is disabled. After a message using a one-time pre-key successfully authenticates and decrypts, the recipient removes the corresponding private pre-key locally.
 
 ## Authentication and authorization
 
 Supabase Auth authenticates accounts. PostgreSQL Row Level Security restricts access to user-owned data, conversation membership, device ownership and message endpoints.
+
+Important authorization relationships include:
+
+- a sender must own the sender device;
+- a message recipient device must belong to an active member of the conversation;
+- delivery records must name the actual recipient device of the referenced message;
+- contact verification records must belong to the owner of the contact and reference an active device belonging to that contact user;
+- conversation members cannot self-promote by changing their own membership role.
 
 The security model assumes that service-role credentials remain server-side and are never embedded in browser code.
 
@@ -36,7 +54,13 @@ A fingerprint comparison is an identity verification mechanism; it does not by i
 
 ## Replay protection
 
-Message envelopes carry a sender-side counter and random message ID. The client keeps local replay state and rejects envelopes that are too old, duplicated or otherwise fail the replay policy.
+Message envelopes carry a sender-side counter and random message ID. The client first checks freshness without mutating local state. Only after successful authenticated decryption is replay state recorded in a single atomic IndexedDB transaction. This prevents corrupted ciphertext from burning a valid counter while preventing concurrent tabs from accepting the same message twice.
+
+## Transport / browser hardening
+
+The application server adds baseline HTTP security headers including `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy` and `Cross-Origin-Opener-Policy`.
+
+These headers are defense-in-depth and are not a substitute for endpoint security or a complete Content Security Policy.
 
 ## What is not protected
 
