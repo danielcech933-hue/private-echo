@@ -1,13 +1,9 @@
 /**
  * Message encryption / decryption.
  *
- * The header is authenticated twice:
- *  - as AES-GCM additional authenticated data (binds ciphertext to routing data)
- *  - by an ECDSA signature from the sender's device identity key
- *
- * Replay protection: header carries a monotonic sender counter, a random
- * message id and a timestamp; all are covered by the signature and the AEAD AAD.
- * The receiving side enforces them (see src/security/replay-guard.ts).
+ * The header is authenticated by AES-GCM AAD and by the sender device signature.
+ * The receiving service separately binds the claimed sender identity key to the
+ * device directory record before this module accepts the plaintext.
  */
 import { bytesToUtf8, utf8ToBytes } from "@/lib/encoding";
 import { cryptoProvider } from "./webcrypto-provider";
@@ -64,10 +60,7 @@ export function aadFor(header: Omit<MessageHeader, "signature" | "nonce">): Uint
 class EnvelopeEncryptor implements MessageEncryptor {
   constructor(private readonly senderDeviceId: string) {}
 
-  async encrypt(
-    remote: RemoteDeviceBundle,
-    message: PlaintextMessage,
-  ): Promise<EncryptedEnvelope> {
+  async encrypt(remote: RemoteDeviceBundle, message: PlaintextMessage): Promise<EncryptedEnvelope> {
     const signing = await keyManager.getSigningKeyPair();
     if (!signing) throw new Error("No device identity: run device setup first");
 
@@ -96,10 +89,7 @@ class EnvelopeEncryptor implements MessageEncryptor {
     );
 
     const unsigned = { ...base, nonce: payload.nonce };
-    const signature = await cryptoProvider.sign(
-      signing.privateKey,
-      headerToSignedBytes(unsigned),
-    );
+    const signature = await cryptoProvider.sign(signing.privateKey, headerToSignedBytes(unsigned));
 
     return { header: { ...unsigned, signature }, ciphertext: payload.ciphertext };
   }
@@ -108,6 +98,13 @@ class EnvelopeEncryptor implements MessageEncryptor {
 class EnvelopeDecryptor implements MessageDecryptor {
   async decrypt(envelope: EncryptedEnvelope): Promise<PlaintextMessage> {
     const { header, ciphertext } = envelope;
+
+    if (header.envelopeVersion !== ENVELOPE_VERSION) {
+      throw new Error(`Unsupported envelope version: ${header.envelopeVersion}`);
+    }
+    if (header.suite !== cryptoProvider.suite) {
+      throw new Error(`Unsupported message crypto suite: ${header.suite}`);
+    }
 
     const { signature, ...unsigned } = header;
     const signatureOk = await cryptoProvider.verify(
@@ -125,6 +122,14 @@ class EnvelopeDecryptor implements MessageDecryptor {
     );
 
     const parsed = JSON.parse(bytesToUtf8(plaintext)) as PlaintextMessage;
+    if (typeof parsed.body !== "string" || typeof parsed.sentAt !== "number") {
+      throw new Error("Decrypted message payload is malformed");
+    }
+
+    if (typeof header.usedPrekeyId === "number") {
+      await keyManager.consumePrekey(header.usedPrekeyId);
+    }
+
     return { body: parsed.body, sentAt: parsed.sentAt };
   }
 }
