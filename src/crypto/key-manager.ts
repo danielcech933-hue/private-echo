@@ -59,6 +59,10 @@ class LocalKeyManager implements KeyManager {
     return this.store.getKeyPair(KEY_IDS.oneTimePrekey(prekeyId));
   }
 
+  async consumePrekey(prekeyId: number): Promise<void> {
+    await this.store.deleteKeyPair(KEY_IDS.oneTimePrekey(prekeyId));
+  }
+
   async getSignedPrekeyPair(): Promise<KeyPairHandle | null> {
     return this.store.getKeyPair(KEY_IDS.signedPrekey);
   }
