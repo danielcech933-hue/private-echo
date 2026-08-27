@@ -48,12 +48,12 @@ function AuthPage() {
             }
             window.sessionStorage.removeItem("ciphra-pending-handle");
           }
-          void navigate({ to: "/_authenticated/messages", replace: true });
+          void navigate({ to: "/messages", replace: true });
         })();
       }
     });
     void supabase.auth.getUser().then(({ data: user }) => {
-      if (user.user) void navigate({ to: "/_authenticated/messages", replace: true });
+      if (user.user) void navigate({ to: "/messages", replace: true });
     });
     return () => data.subscription.unsubscribe();
   }, [navigate]);
