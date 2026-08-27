@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.15"
+    PostgrestVersion: "14.17"
   }
   public: {
     Tables: {
@@ -465,6 +465,17 @@ export type Database = {
     }
     Functions: {
       can_read_message: { Args: { _message_id: string }; Returns: boolean }
+      claim_one_time_prekey: {
+        Args: {
+          _consumer_device_id: string
+          _conversation_id: string
+          _device_id: string
+        }
+        Returns: {
+          prekey_id: number
+          public_key: string
+        }[]
+      }
       is_conversation_admin: {
         Args: { _conversation_id: string }
         Returns: boolean
