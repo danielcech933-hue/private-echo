@@ -33,38 +33,70 @@ function AuthPage() {
   const [password, setPassword] = useState("");
   const [handle, setHandle] = useState("");
   const [busy, setBusy] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
   const [awaitingConfirm, setAwaitingConfirm] = useState(false);
 
   useEffect(() => {
+    let mounted = true;
+
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === "SIGNED_IN" && session) {
+      if (!mounted || event !== "SIGNED_IN" || !session) return;
+      void finishAuthentication();
+    });
+
+    void supabase.auth
+      .getUser()
+      .then(({ data: user, error }) => {
+        if (!mounted) return;
+        if (error) {
+          toast.error(error.message);
+          return;
+        }
+        if (user.user) void finishAuthentication();
+      })
+      .catch((error: unknown) => {
+        if (mounted) toast.error(error instanceof Error ? error.message : "Unable to check session");
+      })
+      .finally(() => {
+        if (mounted) setCheckingSession(false);
+      });
+
+    return () => {
+      mounted = false;
+      data.subscription.unsubscribe();
+    };
+
+    async function finishAuthentication() {
+      if (!mounted) return;
+      setBusy(true);
+      try {
         const pending = window.sessionStorage.getItem("ciphra-pending-handle");
-        void (async () => {
-          if (pending) {
-            try {
-              await ensureProfile(pending);
-            } catch {
-              /* Handle can be corrected later if profile creation failed. */
-            }
-            window.sessionStorage.removeItem("ciphra-pending-handle");
-          }
-          await navigate({ to: "/messages", replace: true });
-        })();
+        if (pending) {
+          await ensureProfile(pending);
+          window.sessionStorage.removeItem("ciphra-pending-handle");
+        }
+        await navigate({ to: "/messages", replace: true });
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Signed in, but account setup failed");
+      } finally {
+        if (mounted) {
+          setBusy(false);
+          setCheckingSession(false);
+        }
       }
-    });
-
-    void supabase.auth.getUser().then(({ data: user }) => {
-      if (user.user) void navigate({ to: "/messages", replace: true });
-    });
-
-    return () => data.subscription.unsubscribe();
+    }
   }, [navigate]);
 
   async function signIn() {
     setBusy(true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setBusy(false);
-    if (error) toast.error(error.message);
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      if (error) toast.error(error.message);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Sign-in failed");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function signUp() {
@@ -72,21 +104,42 @@ function AuthPage() {
       toast.error("Pick a handle with at least 3 characters");
       return;
     }
+    if (password.length < 6) {
+      toast.error("Use a password with at least 6 characters");
+      return;
+    }
 
     setBusy(true);
     window.sessionStorage.setItem("ciphra-pending-handle", handle.trim().toLowerCase());
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: { emailRedirectTo: window.location.origin },
-    });
-    setBusy(false);
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+        options: { emailRedirectTo: `${window.location.origin}/auth` },
+      });
 
-    if (error) {
-      toast.error(error.message);
-      return;
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+
+      if (!data.session) {
+        setAwaitingConfirm(true);
+        toast.success("Confirmation email sent");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Account creation failed");
+    } finally {
+      setBusy(false);
     }
-    if (!data.session) setAwaitingConfirm(true);
+  }
+
+  if (checkingSession) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-background px-6 text-sm text-muted-foreground">
+        Checking secure session…
+      </main>
+    );
   }
 
   return (
@@ -100,9 +153,11 @@ function AuthPage() {
           <div className="mt-8 rounded-xl border border-border bg-card p-6 text-card-foreground">
             <h1 className="text-lg font-semibold">Check your email</h1>
             <p className="mt-2 text-sm text-muted-foreground">
-              Confirm your address to finish creating the account. Your device keys are generated
-              after the first sign-in — nothing is uploaded before that.
+              Confirm your address to finish creating the account. After confirmation, return to Ciphra and sign in.
             </p>
+            <Button className="mt-6 w-full" variant="outline" onClick={() => setAwaitingConfirm(false)}>
+              Back to sign in
+            </Button>
           </div>
         ) : (
           <Tabs defaultValue="signin" className="mt-8">
@@ -119,7 +174,7 @@ function AuthPage() {
               <Field label="Email" value={email} onChange={setEmail} type="email" />
               <Field label="Password" value={password} onChange={setPassword} type="password" />
               <Button className="w-full" disabled={busy} onClick={() => void signIn()}>
-                Sign in
+                {busy ? "Signing in…" : "Sign in"}
               </Button>
             </TabsContent>
 
@@ -133,7 +188,7 @@ function AuthPage() {
               <Field label="Email" value={email} onChange={setEmail} type="email" />
               <Field label="Password" value={password} onChange={setPassword} type="password" />
               <Button className="w-full" disabled={busy} onClick={() => void signUp()}>
-                Create account
+                {busy ? "Creating account…" : "Create account"}
               </Button>
             </TabsContent>
           </Tabs>
