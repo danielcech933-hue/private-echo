@@ -476,6 +476,10 @@ export type Database = {
           public_key: string
         }[]
       }
+      is_contact_of_current_user: {
+        Args: { _user_id: string }
+        Returns: boolean
+      }
       is_conversation_admin: {
         Args: { _conversation_id: string }
         Returns: boolean
@@ -485,6 +489,7 @@ export type Database = {
         Returns: boolean
       }
       owns_device: { Args: { _device_id: string }; Returns: boolean }
+      shares_conversation: { Args: { _user_id: string }; Returns: boolean }
     }
     Enums: {
       conversation_kind: "direct" | "group"
